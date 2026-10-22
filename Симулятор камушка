@@ -1,0 +1,185 @@
+<html lang="ru"><head>
+<meta charset="utf-8">
+<title>Симулятор камня</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#bfe3f5;--panel:rgba(255,255,255,.88);--fg:#1d2730;--ac:#e0662d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c2a3a;--panel:rgba(25,32,42,.88);--fg:#e8eef4}}
+:root[data-theme="dark"]{--bg:#1c2a3a;--panel:rgba(25,32,42,.88);--fg:#e8eef4}
+html,body{height:100%;margin:0;overflow:hidden;background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--fg);touch-action:none}
+canvas{display:block;position:absolute;inset:0;width:100%;height:100%}
+#ui{position:absolute;top:env(safe-area-inset-top,0px);left:0;right:0;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px;pointer-events:none}
+.box{background:var(--panel);border-radius:12px;padding:8px 12px;pointer-events:auto;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.box label{display:flex;flex-direction:column;gap:2px;font-size:12px}
+input[type=range]{width:120px;accent-color:var(--ac)}
+#score{font-size:22px;font-weight:700}
+button{font:inherit;border:0;border-radius:10px;background:var(--ac);color:#fff;padding:8px 14px;cursor:pointer;font-weight:600}
+#ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.45);color:#fff;text-align:center;padding:20px}
+#ov h1{margin:0;font-size:clamp(30px,8vw,56px)}
+#ov p{margin:0;opacity:.9}
+#pad{position:absolute;bottom:calc(env(safe-area-inset-bottom,0px) + 14px);right:14px;display:grid;grid-template-columns:repeat(3,54px);gap:6px}
+#pad button{height:54px;font-size:22px;padding:0;opacity:.85}
+@media (hover:hover) and (pointer:fine){#pad{display:none}}
+</style>
+</head>
+<body>
+<canvas id="c" width="780" height="1340" style="width: 390px; height: 670px;"></canvas>
+<div id="ui">
+  <div class="box">Счёт: <span id="score">0</span> · Рекорд: <span id="best">0</span></div>
+  <div class="box"><label>Скорость машин: <b id="sv">1.0×</b><input id="spd" type="range" min="0.3" max="3" step="0.1" value="1"></label></div>
+  <div class="box"><label>Машин на дороге: <b id="dv">3</b><input id="den" type="range" min="0" max="8" step="1" value="3"></label></div>
+  <button id="pause">⏸ Пауза</button>
+</div>
+<div id="pad">
+  <span></span><button data-d="f">▲</button><span></span>
+  <button data-d="l">◀</button><button data-d="b">▼</button><button data-d="r">▶</button>
+</div>
+<div id="ov"><h1>🪨 Симулятор камня</h1><p>Перейди дорогу и не попади под машину</p><p>Стрелки / WASD — прыжок · P или Пробел — пауза</p><button id="go">Играть</button></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('c'),R=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+R.setPixelRatio(Math.min(devicePixelRatio,2));R.shadowMap.enabled=true;
+const scene=new THREE.Scene();scene.background=new THREE.Color(0xbfe3f5);scene.fog=new THREE.Fog(0xbfe3f5,18,40);
+const cam=new THREE.PerspectiveCamera(50,1,.1,100);
+scene.add(new THREE.AmbientLight(0xffffff,.65));
+const sun=new THREE.DirectionalLight(0xffffff,.8);sun.position.set(6,12,6);sun.castShadow=true;
+sun.shadow.camera.left=-14;sun.shadow.camera.right=14;sun.shadow.camera.top=14;sun.shadow.camera.bottom=-14;scene.add(sun,sun.target);
+function resize(){R.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+
+const M=(c)=>new THREE.MeshLambertMaterial({color:c});
+const W=8, rows=new Map();
+let speed=1,density=3,paused=false,started=false,dead=false,maxRow=0,best=0;
+try{best=+localStorage.getItem('rockBest')||0}catch(e){}
+$('best').textContent=best;
+
+const rock=new THREE.Mesh(new THREE.DodecahedronGeometry(.4,0),new THREE.MeshLambertMaterial({color:0x8a8d91,flatShading:true}));
+rock.castShadow=true;scene.add(rock);
+const P={x:0,row:0,hop:null};
+
+function makeCar(){
+  const g=new THREE.Group(),len=1+Math.random()*.9,col=[0xd63031,0x0984e3,0xfdcb6e,0x00b894,0x6c5ce7,0xe17055][Math.random()*6|0];
+  const b=new THREE.Mesh(new THREE.BoxGeometry(len,.4,.7),M(col));b.position.y=.35;
+  const c=new THREE.Mesh(new THREE.BoxGeometry(len*.5,.3,.6),M(0xdfe6e9));c.position.y=.7;
+  const wh=new THREE.BoxGeometry(.25,.25,.8),wm=M(0x222222);
+  [-.3,.3].forEach(o=>{const w=new THREE.Mesh(wh,wm);w.position.set(o*len*1.2,.15,0);g.add(w)});
+  g.add(b,c);g.traverse(o=>o.castShadow=true);g.len=len;return g;
+}
+function populate(row){
+  row.cars.forEach(c=>row.g.remove(c));row.cars=[];
+  const n=density,span=2*(W+6);
+  for(let i=0;i<n;i++){
+    const c=makeCar();c.position.set(-W-6+(i+Math.random()*.6)*span/n,0,0);
+    c.rotation.y=row.dir>0?0:Math.PI;row.g.add(c);row.cars.push(c);
+  }
+}
+function genRow(r){
+  if(rows.has(r))return;
+  const g=new THREE.Group();g.position.z=-r;
+  let type=(r<3||Math.random()<.4)?'grass':'road';
+  const row={r,type,g,cars:[],trees:new Set(),dir:Math.random()<.5?1:-1,v:1.2+Math.random()*2};
+  const floor=new THREE.Mesh(new THREE.BoxGeometry(60,.2,1),M(type==='road'?0x3d4450:(r%2?0x6fcf5a:0x62c24e)));
+  floor.position.y=-.1;floor.receiveShadow=true;g.add(floor);
+  if(type==='road'){
+    for(let x=-30;x<30;x+=2){const l=new THREE.Mesh(new THREE.BoxGeometry(.8,.02,.06),M(0xdddddd));l.position.set(x,.005,0);g.add(l)}
+    populate(row);
+  }else{
+    for(let x=-12;x<=12;x++){
+      if(Math.abs(x)>W||(r>=3&&Math.random()<.2&&x!==0)||(Math.abs(x)>W-1)){
+        if(r<3&&Math.abs(x)<=W)continue;
+        row.trees.add(x);
+        const t=new THREE.Group(),h=.5+Math.random()*.6;
+        const tr=new THREE.Mesh(new THREE.BoxGeometry(.2,.4,.2),M(0x7a5230));tr.position.y=.2;
+        const lf=new THREE.Mesh(new THREE.ConeGeometry(.4,h+.5,6),M(0x2e8b3d));lf.position.y=.4+(h+.5)/2;
+        t.add(tr,lf);t.position.x=x;t.traverse(o=>o.castShadow=true);g.add(t);
+      }
+    }
+  }
+  scene.add(g);rows.set(r,row);
+}
+function reset(){
+  rows.forEach(r=>scene.remove(r.g));rows.clear();
+  P.x=0;P.row=0;P.hop=null;maxRow=0;dead=false;
+  rock.scale.set(1,1,1);rock.position.set(0,.4,0);
+  for(let r=-4;r<24;r++)genRow(r);
+  $('score').textContent=0;
+}
+function die(){
+  dead=true;rock.scale.y=.2;rock.position.y=.1;
+  if(maxRow>best){best=maxRow;$('best').textContent=best;try{localStorage.setItem('rockBest',best)}catch(e){}}
+  $('ov').innerHTML='<h1>💥 Раздавлен!</h1><p>Счёт: '+maxRow+'</p><button id="go">Ещё раз</button>';
+  $('ov').style.display='flex';$('go').onclick=start;
+}
+function start(){reset();started=true;paused=false;$('ov').style.display='none';$('pause').textContent='⏸ Пауза'}
+function setPause(p){
+  if(!started||dead)return;paused=p;
+  $('pause').textContent=p?'▶ Продолжить':'⏸ Пауза';
+  if(p){$('ov').innerHTML='<h1>⏸ Пауза</h1><p>Можно менять скорость и количество машин</p><button id="go">Продолжить</button>';$('ov').style.display='flex';$('ov').style.pointerEvents='none';$('go').style.pointerEvents='auto';$('go').onclick=()=>setPause(false)}
+  else $('ov').style.display='none';
+}
+function move(d){
+  if(!started||paused||dead||P.hop)return;
+  let nx=P.x,nr=P.row;
+  if(d==='f')nr++;if(d==='b')nr--;if(d==='l')nx--;if(d==='r')nx++;
+  if(Math.abs(nx)>W-1||nr<-3)return;
+  genRow(nr);const row=rows.get(nr);
+  if(row&&row.trees.has(nx))return;
+  P.hop={t:0,fx:P.x,fr:P.row,tx:nx,tr:nr};
+  for(let r=nr;r<nr+20;r++)genRow(r);
+  rows.forEach((v,k)=>{if(k<nr-8){scene.remove(v.g);rows.delete(k)}});
+}
+addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  const m={arrowup:'f',w:'f',arrowdown:'b',s:'b',arrowleft:'l',a:'l',arrowright:'r',d:'r'}[k];
+  if(m){move(m);e.preventDefault()}
+  if(k==='p'||k===' '||k==='escape'){if(!started||dead){start()}else setPause(!paused);e.preventDefault()}
+});
+document.querySelectorAll('#pad button').forEach(b=>b.addEventListener('pointerdown',e=>{e.preventDefault();move(b.dataset.d)}));
+let sx,sy;
+cv.addEventListener('pointerdown',e=>{sx=e.clientX;sy=e.clientY});
+cv.addEventListener('pointerup',e=>{const dx=e.clientX-sx,dy=e.clientY-sy;
+  if(Math.abs(dx)<20&&Math.abs(dy)<20)move('f');
+  else if(Math.abs(dx)>Math.abs(dy))move(dx>0?'r':'l');else move(dy<0?'f':'b')});
+$('pause').onclick=()=>{if(!started||dead)start();else setPause(!paused)};
+$('go').onclick=start;
+$('spd').oninput=e=>{speed=+e.target.value;$('sv').textContent=speed.toFixed(1)+'×'};
+$('den').oninput=e=>{density=+e.target.value;$('dv').textContent=density;rows.forEach(r=>{if(r.type==='road')populate(r)})};
+
+reset();
+let last=performance.now(),cx=0,cz=0;
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=Math.min((now-last)/1000,.05);last=now;
+  if(started&&!paused&&!dead){
+    rows.forEach(r=>{
+      if(r.type!=='road')return;
+      r.cars.forEach(c=>{
+        c.position.x+=r.dir*r.v*speed*dt;
+        if(c.position.x>W+6)c.position.x=-W-6;
+        if(c.position.x<-W-6)c.position.x=W+6;
+      });
+    });
+    if(P.hop){
+      const h=P.hop;h.t+=dt/.13;const t=Math.min(h.t,1);
+      P.vx=h.fx+(h.tx-h.fx)*t;
+      rock.position.set(P.vx,.4+Math.sin(t*Math.PI)*.6,-(h.fr+(h.tr-h.fr)*t));
+      rock.rotation.x-= (h.tr-h.fr)*dt*20;rock.rotation.z-=(h.tx-h.fx)*dt*20;
+      if(t>=1){P.x=h.tx;P.row=h.tr;P.hop=null;
+        if(P.row>maxRow){maxRow=P.row;$('score').textContent=maxRow}}
+    }else rock.position.set(P.x,.4,-P.row);
+    const row=rows.get(P.row);
+    if(row&&row.type==='road'&&!P.hop)
+      for(const c of row.cars)if(Math.abs(c.position.x-P.x)<c.len/2+.3){die();break}
+  }
+  const tx=rock.position.x,tz=rock.position.z;
+  cx+=(tx-cx)*Math.min(dt*4,1);cz+=(tz-cz)*Math.min(dt*4,1);
+  cam.position.set(cx*.5+4,8,cz+6);cam.lookAt(cx*.5,0,cz-1.5);
+  sun.position.set(cx+6,12,cz+6);sun.target.position.set(cx,0,cz);
+  R.render(scene,cam);
+}
+requestAnimationFrame(loop);
+</script>
+
+
+</body></html>
